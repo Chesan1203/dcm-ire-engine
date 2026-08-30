@@ -43,8 +43,10 @@ class MarketDataFetcher:
         return market_cap, sigma_E, current_price
         pass
 
-    def get_historical_close(
-        self, ticker: str, period: str = "1y"
-    ) -> pd.DataFrame:
-        # TODO: Fetch time-series historical pricing data[cite: 1]
-        pass
+    def get_historical_close(self, ticker: str, period: str = "1y") -> pd.DataFrame:
+        """Pulls time-series daily close pricing and trading volume."""
+        stock = yf.Ticker(ticker)
+        df = stock.history(period=period)
+        if df.empty:
+            raise ValueError(f"No historical price data found for ticker: {ticker}")
+        return df[["Close", "Volume"]]
