@@ -1,4 +1,37 @@
+from typing import Tuple
 import numpy as np
+from scipy.optimize import root
+from scipy.stats import norm
+
+
+def standard_normal_cdf(x: float) -> float:
+    """Computes the standard normal cumulative distribution function N(x)."""
+    return float(norm.cdf(x))
+
+
+def compute_d1_d2(
+    V: float,
+    D: float,
+    r: float,
+    sigma_V: float,
+    T: float,
+    eps: float = 1e-8
+) -> Tuple[float, float]:
+    """
+    Computes Black-Scholes-Merton d1 and d2 intermediate factors with defensive clamping.
+    """
+    V_safe = max(float(V), eps)
+    D_safe = max(float(D), eps)
+    sigma_safe = max(float(sigma_V), eps)
+    T_safe = max(float(T), eps)
+
+    numerator = np.log(V_safe / D_safe) + (r + 0.5 * (sigma_safe ** 2)) * T_safe
+    denominator = sigma_safe * np.sqrt(T_safe)
+
+    d1 = float(numerator / denominator)
+    d2 = float(d1 - denominator)
+
+    return d1, d2
 
 
 class VectorDistanceCalculator:
