@@ -49,9 +49,27 @@ class MertonSolver:
     def solve_asset_parameters(
         self, E: float, sigma_E: float, D: float, r: float, T: float
     ) -> Tuple[float, float]:
-        # TODO: Set initial guesses: V0 = E + D, sigma_V0 = sigma_E * (E / (E + D))[cite: 1, 2]
-        # TODO: Run scipy.optimize.root with method='lm' (Levenberg-Marquardt)[cite: 1, 2]
-        pass
+        # 1. Initial Guesses
+        V_0 = float(E + D)
+        sigma_V0 = float(sigma_E * (E / max(E + D, 1e-8)))
+        x0 = np.array([V_0, sigma_V0], dtype=float)
+
+        # 2. Execute Levenberg-Marquardt root solving
+        sol = root(
+            self._merton_objective,
+            x0=x0,
+            args=(E, sigma_E, D, r, T),
+            method="lm",
+        )
+
+        # 3. Defensive validation and fallback
+        if sol.success:
+            V_sol = float(sol.x[0])
+            sigma_V_sol = float(sol.x[1])
+            return max(V_sol, 1e-8), max(sigma_V_sol, 1e-8) # To ensure non-negativity
+        else:
+            # Fallback to initial guess approximations if solver diverges
+            return V_0, sigma_V0
 
     def compute_distance_to_default(
         self, V: float, sigma_V: float, D: float, mu_V: float, T: float
