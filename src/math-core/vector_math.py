@@ -41,19 +41,20 @@ class VectorDistanceCalculator:
         pass
 
     def euclidean_distance(
-        self, entity_vector: np.ndarray, centroid_vector: np.ndarray
-    ) -> float:
-        # TODO: Compute L2 norm: ||x_e(t) - mu_risk||_2[cite: 1, 2]
-        pass
+        self, entity_vector: np.ndarray, centroid_vector: np.ndarray) -> float:
+        """Computes the L2 norm distance ||x_e(t) - mu_risk||_2."""
+        e_vec = np.asarray(entity_vector, dtype=float)
+        c_vec = np.asarray(centroid_vector, dtype=float)
+        return float(np.linalg.norm(e_vec - c_vec))
 
     def calculate_drift_velocity(
         self, distance_current: float, distance_previous: float
     ) -> float:
-        # TODO: Compute delta d_e = d_e(t) - d_e(t - delta_t)[cite: 1, 2]
-        pass
+        """Computes delta d_e = d_e(t) - d_e(t - delta_t) """
+        return float(distance_current - distance_previous)
 
     def is_drift_alert_triggered(
         self, velocity: float, threshold: float = -0.5
     ) -> bool:
-        # TODO: Return True if velocity < -0.5 indicating rapid migration toward distress[cite: 1, 2]
-        pass
+        """Returns True if velocity < threshold, indicating rapid migration toward distress."""
+        return bool(velocity < threshold)
