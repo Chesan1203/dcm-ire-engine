@@ -71,8 +71,28 @@ class MertonSolver:
             # Fallback to initial guess approximations if solver diverges
             return V_0, sigma_V0
 
+
     def compute_distance_to_default(
-        self, V: float, sigma_V: float, D: float, mu_V: float, T: float
+        self, V: float, sigma_V: float, D: float, mu_V: float, T: float, eps: float = 1e-8
     ) -> float:
-        # TODO: Evaluate analytical Distance-to-Default (DD) equation[cite: 1, 2]
-        pass
+        """
+        Calculates the structural Distance-to-Default (DD) metric:
+        DD = [ln(V / D) + (mu_V - 0.5 * sigma_V^2) * T] / (sigma_V * sqrt(T))
+        """
+        # 1. Defensive bounds
+        V_safe = max(float(V), eps)
+        D_safe = max(float(D), eps)
+        sigma_safe = max(float(sigma_V), eps)
+        T_safe = max(float(T), eps)
+
+        # 2. Evaluate analytical Distance-to-Default
+        numerator = np.log(V_safe / D_safe) + (mu_V - 0.5 * (sigma_safe ** 2)) * T_safe
+        denominator = sigma_safe * np.sqrt(T_safe)
+
+        return float(numerator / denominator)
+
+    def compute_probability_of_default(self, distance_to_default: float) -> float:
+        """
+        Computes the theoretical market-implied probability of default: PD = N(-DD)
+        """
+        return standard_normal_cdf(-float(distance_to_default))
