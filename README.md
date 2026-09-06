@@ -74,3 +74,28 @@ dcm-ire-engine/
 * **Pipeline Verification (`tests/test_merton_pipeline.py`):**
   * Tests root-finding convergence and parameter sensitivity across synthetic profiles for solvent and distressed firms.
   * Validates theoretical boundary invariants across all solved scenarios: $V \ge E$, $\sigma_V \le \sigma_E$, and $DD_{\text{healthy}} \gg DD_{\text{distressed}}$.
+
+## Getting Started
+
+### 1. Environment Setup
+
+```bash
+# Clone repository
+git clone [https://github.com/Chesan1203/dcm-ire-engine.git](https://github.com/Chesan1203/dcm-ire-engine.git)
+cd dcm-ire-engine
+
+# Initialize and activate virtual environment
+python3 -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+### 2. Run Stochastic Verification
+
+Execute the test suite as a module from the root directory:
+
+```bash
+python -m tests.test_merton_pipeline
+```
