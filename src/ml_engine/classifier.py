@@ -51,9 +51,69 @@ class DistressClassifier:
         target_y.name = "target_distress"
         return target_y
 
+    def fit(
+        self, 
+        X_train: pd.DataFrame, 
+        y_train: pd.Series, 
+        X_val: pd.DataFrame = None, 
+        y_val: pd.Series = None
+    ) -> None:
+        """
+        Trains the XGBoost classifier on the rolling feature matrix.
+        Uses scale_pos_weight to heavily penalize misclassification of the minority distress class.
+        Optionally tracks validation logloss to monitor for overfitting.
+        """
+        if X_val is not None and y_val is not None:
+            # Fit with validation tracking
+            self.model.fit(
+                X_train, y_train,
+                eval_set=[(X_train, y_train), (X_val, y_val)],
+                verbose=False
+            )
+        else:
+            # Standard fit if no validation set is provided
+            self.model.fit(X_train, y_train)
+
     def calibrate_optimal_threshold(
-        self, X_val: np.ndarray, y_val: np.ndarray
+        self, X_val: pd.DataFrame, y_val: pd.Series
     ) -> float:
-        # TODO: Extract predicted probabilities y_probs
-        # TODO: Compute Precision-Recall curve and find threshold maximizing F1-score
-        pass
+        """
+        Extracts validation probabilities and computes the PR curve to find
+        the exact classification threshold that maximizes the F1-score.
+        """
+        # Extract raw probabilities for the positive class (distress, y=1)
+        y_probs = self.model.predict_proba(X_val)[:, 1]
+        
+        # Compute Precision-Recall curve
+        precisions, recalls, thresholds = precision_recall_curve(y_val, y_probs)
+        
+        # Calculate F1-score for each threshold safely to avoid division by zero
+        numerator = 2 * precisions * recalls
+        denominator = precisions + recalls
+        f1_scores = np.divide(
+            numerator, denominator, out=np.zeros_like(numerator), where=(denominator != 0)
+        )
+        
+        # Locate the index of the highest F1-score
+        optimal_idx = int(np.argmax(f1_scores))
+        
+        # The thresholds array has one less element than precisions and recalls
+        if optimal_idx < len(thresholds):
+            optimal_threshold = float(thresholds[optimal_idx])
+        else:
+            optimal_threshold = 1.0  # Fallback if the maximum is at the absolute end
+            
+        # Store for future inference calls
+        self.optimal_threshold_ = optimal_threshold
+        
+        return optimal_threshold
+
+    def predict_distress(self, X_new: pd.DataFrame) -> np.ndarray:
+        """
+        Executes inference using the PR-calibrated custom threshold.
+        """
+        if not hasattr(self, 'optimal_threshold_'):
+            raise ValueError("Model must be calibrated before calling predict_distress.")
+            
+        y_probs = self.model.predict_proba(X_new)[:, 1]
+        return (y_probs >= self.optimal_threshold_).astype(int)
