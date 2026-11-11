@@ -27,7 +27,7 @@ class DistressExplainer:
 
         # Handle binary classification output formats (extract 1D array for the row)
         if isinstance(shap_values, list):
-            instance_shap = shap_values[1][0]  # Positive distress class
+            instance_shap = shap_values[1][0] if shap_values[1].ndim > 1 else shap_values[1] # Positive distress class
         elif shap_values.ndim == 2:
             instance_shap = shap_values[0]
         else:
