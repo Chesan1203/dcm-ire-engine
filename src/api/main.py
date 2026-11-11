@@ -4,7 +4,20 @@ from typing import Dict, Any
 import pandas as pd
 import numpy as np
 
+# Import validation schemas
 from src.api.schemas import RiskReport
+
+# Import quantitative pipeline modules
+from src.ingestion.sec_edgar import SECEdgarIngestor
+from src.ingestion.market_data import MarketDataFetcher
+from src.ingestion.macro_fred import MacroFREDFetcher
+from src.math_core.merton_solver import MertonSolver
+from src.ml_engine.explainer import DistressExplainer
+
+sec_ingestor = SECEdgarIngestor()
+market_fetcher = MarketDataFetcher()
+macro_fetcher = MacroFREDFetcher()
+merton_solver = MertonSolver()
 
 app = FastAPI(
     title="DCM-IRE Credit Risk Engine API",
@@ -34,4 +47,24 @@ async def get_risk(ticker: str) -> RiskReport:
     # TODO: Run SciPy Merton Solver for unobservable assets
     # TODO: Execute XGBoost Inference & SHAP Extraction
     # TODO: Return structured JSON payload to the client
-    pass
+    try:
+        # Placeholder / Orchestration hook for pipeline integration:
+        # 1. raw_data = await async_ingest_pipeline(ticker)
+        # 2. merton_results = solve_merton_model(raw_data)
+        # 3. pd_score, feature_row = run_xgboost_inference(merton_results)
+        # 4. shap_drivers = explainer.get_top_drivers(feature_row)
+        
+        # Mock structural payload for microservice wiring verification
+        return RiskReport(
+            ticker=ticker.upper(),
+            distance_to_default=3.45,
+            probability_of_distress=0.042,
+            alert_status="NORMAL",
+            shap_top_drivers={
+                "asset_volatility_sigma_V": 0.124,
+                "distance_to_default_drift": -0.098,
+                "yield_curve_spread": 0.045
+            }
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
