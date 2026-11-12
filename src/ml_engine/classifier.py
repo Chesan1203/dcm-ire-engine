@@ -36,18 +36,14 @@ class DistressClassifier:
     def generate_binary_target(
         self, dd_series: pd.Series, threshold_sigma: float = 1.5
     ) -> pd.Series:
-        """Defines y=1 if firm exhibits >1.5 sigma DD drop in next 30 days."""
-        # Calculate the sample standard deviation of Distance-to-Default
+        """Defines y=1 if firm exhibits >1.5 sigma DD drop OR breaches DD < 1.0 in next 30 days."""
         dd_std = float(dd_series.std())
-        
-        # Look forward 30 days to compute future DD change
         forward_dd = dd_series.shift(-30)
         forward_delta = forward_dd - dd_series
-        
-        # y = 1 if the drop is greater than the 1.5 sigma threshold
+
         shock_cutoff = -threshold_sigma * dd_std
-        target_y = (forward_delta < shock_cutoff).astype(int)
-        
+        target_y = ((forward_delta < shock_cutoff) | (forward_dd < 1.0)).astype(int)
+
         target_y.name = "target_distress"
         return target_y
 
@@ -60,19 +56,23 @@ class DistressClassifier:
     ) -> None:
         """
         Trains the XGBoost classifier on the rolling feature matrix.
-        Uses scale_pos_weight to heavily penalize misclassification of the minority distress class.
-        Optionally tracks validation logloss to monitor for overfitting.
+        Converts inputs to raw numpy arrays to strip pandas index metadata
+        and prevent length mismatches during DMatrix construction.
         """
+        X_train_np = X_train.values if isinstance(X_train, (pd.DataFrame, pd.Series)) else X_train
+        y_train_np = y_train.values if isinstance(y_train, (pd.DataFrame, pd.Series)) else y_train
+
         if X_val is not None and y_val is not None:
-            # Fit with validation tracking
+            X_val_np = X_val.values if isinstance(X_val, (pd.DataFrame, pd.Series)) else X_val
+            y_val_np = y_val.values if isinstance(y_val, (pd.DataFrame, pd.Series)) else y_val
+
             self.model.fit(
-                X_train, y_train,
-                eval_set=[(X_train, y_train), (X_val, y_val)],
+                X_train_np, y_train_np,
+                eval_set=[(X_train_np, y_train_np), (X_val_np, y_val_np)],
                 verbose=False
             )
         else:
-            # Standard fit if no validation set is provided
-            self.model.fit(X_train, y_train)
+            self.model.fit(X_train_np, y_train_np)
 
     def calibrate_optimal_threshold(
         self, X_val: pd.DataFrame, y_val: pd.Series
@@ -81,31 +81,27 @@ class DistressClassifier:
         Extracts validation probabilities and computes the PR curve to find
         the exact classification threshold that maximizes the F1-score.
         """
-        # Extract raw probabilities for the positive class (distress, y=1)
-        y_probs = self.model.predict_proba(X_val)[:, 1]
+        X_val_np = X_val.values if isinstance(X_val, (pd.DataFrame, pd.Series)) else X_val
+        y_val_np = y_val.values if isinstance(y_val, (pd.DataFrame, pd.Series)) else y_val
         
-        # Compute Precision-Recall curve
-        precisions, recalls, thresholds = precision_recall_curve(y_val, y_probs)
+        y_probs = self.model.predict_proba(X_val_np)[:, 1]
         
-        # Calculate F1-score for each threshold safely to avoid division by zero
+        precisions, recalls, thresholds = precision_recall_curve(y_val_np, y_probs)
+        
         numerator = 2 * precisions * recalls
         denominator = precisions + recalls
         f1_scores = np.divide(
             numerator, denominator, out=np.zeros_like(numerator), where=(denominator != 0)
         )
         
-        # Locate the index of the highest F1-score
         optimal_idx = int(np.argmax(f1_scores))
         
-        # The thresholds array has one less element than precisions and recalls
         if optimal_idx < len(thresholds):
             optimal_threshold = float(thresholds[optimal_idx])
         else:
-            optimal_threshold = 1.0  # Fallback if the maximum is at the absolute end
+            optimal_threshold = 0.5
             
-        # Store for future inference calls
         self.optimal_threshold_ = optimal_threshold
-        
         return optimal_threshold
 
     def predict_distress(self, X_new: pd.DataFrame) -> np.ndarray:
@@ -115,5 +111,6 @@ class DistressClassifier:
         if not hasattr(self, 'optimal_threshold_'):
             raise ValueError("Model must be calibrated before calling predict_distress.")
             
-        y_probs = self.model.predict_proba(X_new)[:, 1]
+        X_new_np = X_new.values if isinstance(X_new, (pd.DataFrame, pd.Series)) else X_new
+        y_probs = self.model.predict_proba(X_new_np)[:, 1]
         return (y_probs >= self.optimal_threshold_).astype(int)
