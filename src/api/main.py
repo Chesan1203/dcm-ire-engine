@@ -14,6 +14,8 @@ from src.ingestion.sec_edgar import SECEdgarIngestor
 from src.ingestion.market_data import MarketDataFetcher
 from src.ingestion.macro_fred import MacroFREDFetcher
 from src.math_core.merton_solver import MertonSolver
+from src.math_core.vector_math import VectorDistanceCalculator
+from src.ml_engine.clustering import GeometricDiscoveryEngine, RobustWinsorScaler
 from src.ml_engine.classifier import DistressClassifier
 from src.ml_engine.explainer import DistressExplainer
 
@@ -22,6 +24,7 @@ sec_ingestor = SECEdgarIngestor()
 market_fetcher = MarketDataFetcher()
 macro_fetcher = MacroFREDFetcher()
 merton_solver = MertonSolver()
+vector_calc = VectorDistanceCalculator()
 
 # --- Load Trained Model Checkpoint ---
 MODEL_PATH = "models/distress_xgboost.pkl"
@@ -33,6 +36,24 @@ else:
 
 # Instantiate SHAP explainer on the trained classifier model
 explainer = DistressExplainer(classifier.model)
+
+# --- Initialize Geometric Radar from Historical Panel ---
+PANEL_PATH = "data/processed/historical_panel.csv"
+CLUSTER_COLS = ["distance_to_default", "asset_volatility", "yield_spread", "sector_vix"]
+panel_df = pd.read_csv(PANEL_PATH) if os.path.exists(PANEL_PATH) else pd.DataFrame()
+
+geo_scaler = None
+geo_engine = None
+distress_centroid = None
+
+if not panel_df.empty and all(col in panel_df.columns for col in CLUSTER_COLS):
+    geo_scaler = RobustWinsorScaler()
+    geo_engine = GeometricDiscoveryEngine()
+    X_scaled = geo_scaler.fit_transform(panel_df[CLUSTER_COLS].dropna())
+    kmeans_model = geo_engine.tune_and_fit_kmeans(X_scaled[::10])
+    distress_centroid = geo_engine.identify_distress_centroid(
+        kmeans_model, geo_scaler.selected_features_
+    )
 
 app = FastAPI(
     title="DCM-IRE Credit Risk Engine API",
@@ -98,18 +119,38 @@ async def get_risk(ticker: str) -> RiskReport:
             T=4.0
         )
 
+        merton_analytical_pd = merton_solver.compute_probability_of_default(
+            distance_to_default
+        )
+
+        # Pull 30-day lag baseline from historical panel if available
+        dd_lag, vol_lag, spread_lag, vix_lag = (
+            distance_to_default,
+            implied_asset_vol,
+            yield_spread,
+            sector_vix,
+        )
+        if not panel_df.empty and "ticker" in panel_df.columns:
+            ticker_hist = panel_df[panel_df["ticker"] == clean_ticker]
+            if len(ticker_hist) >= 30:
+                lag_row = ticker_hist.iloc[-30]
+                dd_lag = float(lag_row["distance_to_default"])
+                vol_lag = float(lag_row["asset_volatility"])
+                spread_lag = float(lag_row["yield_spread"])
+                vix_lag = float(lag_row["sector_vix"])
+
         # Step 4: Construct feature row matching full 10-feature training set
         feature_row = pd.DataFrame([{
             "distance_to_default": distance_to_default,
             "asset_volatility": implied_asset_vol,
             "yield_spread": yield_spread,
             "sector_vix": sector_vix,
-            "dd_lag_30": distance_to_default,
-            "asset_vol_lag_30": implied_asset_vol,
-            "yield_spread_lag_30": yield_spread,
-            "vix_lag_30": sector_vix,
-            "delta_dd_30d": 0.0,
-            "delta_asset_vol_30d": 0.0
+            "dd_lag_30": dd_lag,
+            "asset_vol_lag_30": vol_lag,
+            "yield_spread_lag_30": spread_lag,
+            "vix_lag_30": vix_lag,
+            "delta_dd_30d": distance_to_default - dd_lag,
+            "delta_asset_vol_30d": implied_asset_vol - vol_lag
         }])
 
         # Step 5: Execute trained model inference & SHAP feature attributions
@@ -120,10 +161,46 @@ async def get_risk(ticker: str) -> RiskReport:
 
         shap_drivers = explainer.get_top_drivers(feature_row)
 
+        # Step 6: Compute Geometric Radar distance and 30-day drift velocity
+        geo_dist = None
+        geo_velocity = None
+        geo_alert = False
+
+        if (
+            geo_scaler is not None
+            and geo_engine is not None
+            and geo_engine.fitted_pca is not None
+            and distress_centroid is not None
+        ):
+            curr_df = pd.DataFrame([{
+                "distance_to_default": distance_to_default,
+                "asset_volatility": implied_asset_vol,
+                "yield_spread": yield_spread,
+                "sector_vix": sector_vix,
+            }])
+            prev_df = pd.DataFrame([{
+                "distance_to_default": dd_lag,
+                "asset_volatility": vol_lag,
+                "yield_spread": spread_lag,
+                "sector_vix": vix_lag,
+            }])
+
+            curr_pca = geo_engine.fitted_pca.transform(geo_scaler.transform(curr_df))[0]
+            prev_pca = geo_engine.fitted_pca.transform(geo_scaler.transform(prev_df))[0]
+
+            geo_dist = vector_calc.euclidean_distance(curr_pca, distress_centroid)
+            prev_dist = vector_calc.euclidean_distance(prev_pca, distress_centroid)
+            geo_velocity = vector_calc.calculate_drift_velocity(geo_dist, prev_dist)
+            geo_alert = vector_calc.is_drift_alert_triggered(geo_velocity)
+
         return RiskReport(
             ticker=clean_ticker,
             distance_to_default=float(distance_to_default),
+            merton_analytical_pd=float(merton_analytical_pd),
             probability_of_distress=probability_of_distress,
+            geometric_distance_to_distress=geo_dist,
+            geometric_drift_velocity=geo_velocity,
+            geometric_drift_alert=geo_alert,
             alert_status=alert_status,
             shap_top_drivers=shap_drivers
         )
