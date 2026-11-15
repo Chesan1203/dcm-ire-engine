@@ -66,7 +66,26 @@ def load_macro_pca_data(
 
     clean_df["PC1"] = pca_coords[:, 0]
     clean_df["PC2"] = pca_coords[:, 1] if pca_coords.shape[1] > 1 else 0.0
-    clean_df["Regime Cluster"] = [f"Regime {c}" for c in cluster_labels]
+    clean_df["_cluster_id"] = cluster_labels
+
+    # Rank clusters by distance to distress_centroid so regime names are intuitive
+    centers = kmeans_model.cluster_centers_
+    dists_to_risk = {
+        cid: float(np.linalg.norm(centers[cid] - distress_centroid))
+        for cid in range(len(centers))
+    }
+    ordered_cids = sorted(dists_to_risk.keys(), key=lambda c: dists_to_risk[c])
+
+    regime_names: Dict[int, str] = {}
+    for rank, cid in enumerate(ordered_cids):
+        if rank == 0:
+            regime_names[cid] = "Distress / Crisis Regime"
+        elif rank == len(ordered_cids) - 1:
+            regime_names[cid] = "Solvent / Low-Vol Regime"
+        else:
+            regime_names[cid] = f"Transitional Regime ({rank})"
+
+    clean_df["Regime Cluster"] = clean_df["_cluster_id"].map(regime_names)
 
     centroid_2d = np.array([
         float(distress_centroid[0]),
@@ -139,7 +158,6 @@ def _render_shap_bar_chart(shap_drivers: Dict[str, float]) -> go.Figure:
     if not shap_drivers:
         return go.Figure()
 
-    # Reverse order so top contributor sits at the top of the horizontal chart
     items = list(shap_drivers.items())[::-1]
     labels = [FEATURE_LABELS.get(k, k.replace("_", " ").title()) for k, _ in items]
     values = [float(v) for _, v in items]
@@ -183,7 +201,6 @@ def render_micro_pane(ticker: str, report: Dict[str, Any]) -> None:
     alert_status = report.get("alert_status", "NORMAL")
     geo_alert = bool(report.get("geometric_drift_alert", False))
 
-    # Status Banner
     if alert_status == "ALERT":
         st.error(
             f"**DISTRESS ALERT ({clean_ticker})** — Calibrated 30-day forward distress "
@@ -206,7 +223,6 @@ def render_micro_pane(ticker: str, report: Dict[str, Any]) -> None:
     geo_dist = report.get("geometric_distance_to_distress")
     geo_vel = report.get("geometric_drift_velocity")
 
-    # 2x2 KPI Grid (prevents horizontal label truncation)
     row1_col1, row1_col2 = st.columns(2, gap="medium")
     with row1_col1:
         with st.container(border=True):
@@ -247,7 +263,6 @@ def render_micro_pane(ticker: str, report: Dict[str, Any]) -> None:
                 delta_color="inverse" if geo_alert else "off",
             )
 
-    # Gauge + Horizontal SHAP Chart
     viz_left, viz_right = st.columns([1.0, 1.25], gap="medium")
     with viz_left:
         with st.container(border=True):
@@ -258,8 +273,8 @@ def render_micro_pane(ticker: str, report: Dict[str, Any]) -> None:
             st.plotly_chart(_render_shap_bar_chart(shap_drivers), use_container_width=True)
 
 
-def render_macro_pane(selected_ticker: str) -> None:
-    """Renders the 2D PCA Geometric Radar scatter plot with Distress Centroid & drift trajectory."""
+def render_macro_pane(selected_ticker: str, report: Optional[Dict[str, Any]] = None) -> None:
+    """Renders the 2D PCA Geometric Radar with high-visibility markers and clean side legend."""
     pca_df, centroid_2d = load_macro_pca_data()
     if pca_df is None or centroid_2d is None:
         st.warning(
@@ -268,13 +283,63 @@ def render_macro_pane(selected_ticker: str) -> None:
         )
         return
 
+    clean_ticker = selected_ticker.upper().strip()
+    ticker_hist = (
+        pca_df[pca_df["ticker"] == clean_ticker]
+        if "ticker" in pca_df.columns
+        else pd.DataFrame()
+    )
+    has_trajectory = len(ticker_hist) >= 30
+
+    # Top Telemetry & View Controls
+    ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4 = st.columns([1.2, 1.2, 1.2, 1.1])
+    geo_dist = report.get("geometric_distance_to_distress") if report else None
+    geo_vel = report.get("geometric_drift_velocity") if report else None
+    geo_alert = bool(report.get("geometric_drift_alert", False)) if report else False
+
+    with ctrl_col1:
+        st.metric(
+            "Distance to Distress (d_e)",
+            f"{geo_dist:.2f}" if geo_dist is not None else "N/A",
+        )
+    with ctrl_col2:
+        st.metric(
+            "30d Drift Velocity (Δd_e)",
+            f"{geo_vel:+.3f}" if geo_vel is not None else "N/A",
+            delta="Alert (< -0.5)" if geo_alert else "Normal (> -0.5)",
+            delta_color="inverse" if geo_alert else "off",
+        )
+    with ctrl_col3:
+        current_regime = (
+            str(ticker_hist.iloc[-1]["Regime Cluster"])
+            if not ticker_hist.empty
+            else "Out-of-Panel Entity"
+        )
+        st.metric("Current PCA Regime", current_regime.split(" (")[0])
+    with ctrl_col4:
+        st.write("")
+        zoom_trajectory = st.toggle(
+            "Zoom on Trajectory",
+            value=False,
+            disabled=not has_trajectory,
+            help="Zooms the PCA camera closely onto the selected firm's 30-day migration vector.",
+        )
+
+    # Background regime cloud (subtle so foreground markers sit clearly on top)
     plot_df = pca_df.iloc[::10].copy()
+    regime_color_map = {
+        "Solvent / Low-Vol Regime": "#38BDF8",
+        "Transitional Regime (1)": "#A78BFA",
+        "Transitional Regime (2)": "#FBBF24",
+        "Distress / Crisis Regime": "#F87171",
+    }
 
     fig = px.scatter(
         plot_df,
         x="PC1",
         y="PC2",
         color="Regime Cluster",
+        color_discrete_map=regime_color_map,
         hover_data={
             "ticker": True,
             "distance_to_default": ":.2f",
@@ -283,53 +348,109 @@ def render_macro_pane(selected_ticker: str) -> None:
             "PC1": ":.2f",
             "PC2": ":.2f",
         },
-        opacity=0.45,
-        color_discrete_sequence=px.colors.qualitative.Safe,
+        opacity=0.16,
     )
+    fig.update_traces(marker=dict(size=4))
 
-    # Distress Centroid (mu_risk)
+    # Foreground Layer 1: Distress Centroid (mu_risk)
     fig.add_trace(
         go.Scatter(
             x=[centroid_2d[0]],
             y=[centroid_2d[1]],
-            mode="markers+text",
+            mode="markers",
             name="Distress Centroid (μ_risk)",
-            text=["μ_risk"],
-            textposition="top center",
-            textfont=dict(size=13, color="#EF4444"),
             marker=dict(
                 symbol="diamond",
-                size=16,
-                color="#EF4444",
-                line=dict(width=2, color="#FFFFFF"),
+                size=14,
+                color="#FF2E2E",
+                opacity=1.0,
+                line=dict(width=1.8, color="#FFFFFF"),
+            ),
+            hovertemplate=(
+                "<b>Distress Centroid (μ_risk)</b><br>"
+                "PC1: %{x:.2f}<br>PC2: %{y:.2f}<extra></extra>"
             ),
         )
     )
 
-    # 30-trading-day trajectory vector for selected panel ticker
-    clean_ticker = selected_ticker.upper().strip()
-    if "ticker" in pca_df.columns:
-        ticker_hist = pca_df[pca_df["ticker"] == clean_ticker]
-        if len(ticker_hist) >= 30:
-            prev_pt = ticker_hist.iloc[-30]
-            curr_pt = ticker_hist.iloc[-1]
+    # Foreground Layer 2: 30-Day Trajectory Line, Start Circle & Latest Star
+    if has_trajectory:
+        prev_pt = ticker_hist.iloc[-30]
+        curr_pt = ticker_hist.iloc[-1]
+        x0, y0 = float(prev_pt["PC1"]), float(prev_pt["PC2"])
+        x1, y1 = float(curr_pt["PC1"]), float(curr_pt["PC2"])
 
-            fig.add_trace(
-                go.Scatter(
-                    x=[prev_pt["PC1"], curr_pt["PC1"]],
-                    y=[prev_pt["PC2"], curr_pt["PC2"]],
-                    mode="lines+markers+text",
-                    name=f"{clean_ticker} 30d Trajectory",
-                    text=[f"{clean_ticker} (t-30d)", f"{clean_ticker} (Latest)"],
-                    textposition="top right",
-                    line=dict(color="#F59E0B", width=3, dash="dot"),
-                    marker=dict(size=[10, 14], color=["#F59E0B", "#FFFFFF"]),
-                )
+        # Connecting trajectory line
+        fig.add_trace(
+            go.Scatter(
+                x=[x0, x1],
+                y=[y0, y1],
+                mode="lines",
+                name=f"{clean_ticker} 30d Path",
+                line=dict(color="#FACC15", width=2.5),
+                hoverinfo="skip",
             )
+        )
+
+        # Start Circle (t - 30d)
+        fig.add_trace(
+            go.Scatter(
+                x=[x0],
+                y=[y0],
+                mode="markers",
+                name=f"{clean_ticker} (t - 30d)",
+                marker=dict(
+                    symbol="circle",
+                    size=10,
+                    color="#F59E0B",
+                    opacity=1.0,
+                    line=dict(width=1.8, color="#FFFFFF"),
+                ),
+                hovertemplate=(
+                    f"<b>{clean_ticker} (30 Days Ago)</b><br>"
+                    f"DD: {prev_pt['distance_to_default']:.2f}σ<br>"
+                    "PC1: %{x:.2f}, PC2: %{y:.2f}<extra></extra>"
+                ),
+            )
+        )
+
+        # Latest Star (Current)
+        fig.add_trace(
+            go.Scatter(
+                x=[x1],
+                y=[y1],
+                mode="markers",
+                name=f"{clean_ticker} (Latest)",
+                marker=dict(
+                    symbol="star",
+                    size=15,
+                    color="#00F5D4",
+                    opacity=1.0,
+                    line=dict(width=1.8, color="#FFFFFF"),
+                ),
+                hovertemplate=(
+                    f"<b>{clean_ticker} (Latest)</b><br>"
+                    f"DD: {curr_pt['distance_to_default']:.2f}σ<br>"
+                    "PC1: %{x:.2f}, PC2: %{y:.2f}<extra></extra>"
+                ),
+            )
+        )
+
+        if zoom_trajectory:
+            pad_x = max(abs(x1 - x0) * 1.8, 0.65)
+            pad_y = max(abs(y1 - y0) * 1.8, 0.65)
+            cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+            fig.update_xaxes(range=[cx - pad_x, cx + pad_x])
+            fig.update_yaxes(range=[cy - pad_y, cy + pad_y])
+    else:
+        st.info(
+            f"`{clean_ticker}` is an out-of-panel custom equity. The background map displays "
+            "the 11-ticker historical crisis universe and Distress Centroid (`μ_risk`)."
+        )
 
     fig.update_layout(
-        height=540,
-        margin=dict(l=20, r=20, t=30, b=20),
+        height=560,
+        margin=dict(l=20, r=20, t=25, b=20),
         xaxis_title="Principal Component 1 (Structural Solvency & Leverage)",
         yaxis_title="Principal Component 2 (Macro Volatility & Curve Regime)",
         legend=dict(
@@ -338,9 +459,10 @@ def render_macro_pane(selected_ticker: str) -> None:
             y=0.98,
             xanchor="right",
             x=0.98,
-            bgcolor="rgba(17, 24, 39, 0.75)",
-            bordercolor="rgba(255, 255, 255, 0.15)",
+            bgcolor="rgba(15, 23, 42, 0.88)",
+            bordercolor="rgba(255, 255, 255, 0.2)",
             borderwidth=1,
+            font=dict(size=12),
         ),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
@@ -369,11 +491,11 @@ def render_historical_pane(selected_ticker: str) -> None:
         )
         return
 
-    x_col = "date" if "date" in ticker_hist.columns else ticker_hist.index
+    x_vals = ticker_hist["date"] if "date" in ticker_hist.columns else list(range(len(ticker_hist)))
     fig = go.Figure()
     fig.add_trace(
         go.Scatter(
-            x=ticker_hist[x_col] if "date" in ticker_hist.columns else list(range(len(ticker_hist))),
+            x=x_vals,
             y=ticker_hist["distance_to_default"],
             mode="lines",
             name=f"{clean_ticker} Distance-to-Default",
@@ -411,12 +533,12 @@ def main() -> None:
         """
         <style>
         .block-container {
-            padding-top: 1.5rem;
+            padding-top: 3.25rem;
             padding-bottom: 2rem;
             max-width: 1440px;
         }
         [data-testid="stMetricValue"] {
-            font-size: 1.9rem;
+            font-size: 1.85rem;
         }
         </style>
         """,
@@ -429,7 +551,6 @@ def main() -> None:
         "Calibrated XGBoost & TreeSHAP Early-Warning System"
     )
 
-    # Sidebar Controls
     with st.sidebar:
         st.header("Engine Controls")
         api_url = st.text_input("FastAPI Endpoint URL", value=DEFAULT_API_URL)
@@ -443,7 +564,7 @@ def main() -> None:
         preset_ticker = st.selectbox(
             "Select Panel Ticker",
             options=UNIVERSE_TICKERS,
-            index=2,  # Default to GE
+            index=1,  # MSFT
         )
         custom_ticker = st.text_input(
             "Or Enter Any US Listed Ticker",
@@ -453,7 +574,6 @@ def main() -> None:
 
         st.button("Refresh Live Risk Assessment", type="primary", use_container_width=True)
 
-    # Fetch live API risk report once per render
     with st.spinner(f"Running Merton solver, XGBoost & TreeSHAP for {active_ticker}..."):
         report, error_msg = fetch_risk_report(active_ticker, api_url)
 
@@ -470,7 +590,7 @@ def main() -> None:
             render_micro_pane(active_ticker, report)
 
     with tab_macro:
-        render_macro_pane(active_ticker)
+        render_macro_pane(active_ticker, report=report)
 
     with tab_hist:
         render_historical_pane(active_ticker)
